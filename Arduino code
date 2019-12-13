@@ -1,0 +1,291 @@
+/* Node 4: Bed Frame prototype
+ *  - photocell reading (determine if room lights are on/off)
+ *  - thermistor check room temp 
+ *  
+ *    - photocell and thermistor values combined should determine 
+ *      if environment is good for optimal sleep
+ *    
+ *  - LED pwm brightens and darkens depending on 
+ *    
+ *  - decible sensing (loudness in room) [not provided/implemented]
+ *  - smell sensing (scent of death) [not provided/implemented]
+ *
+ *  Cayenne Connection
+ *  - Sending on Channels 8 and 9, 
+ *  average light and temp values respectively
+ *
+ * Bugs - Temperature refinement for more real time measurements
+ * 
+ * Development notes: 
+ *  
+ * This code is done by Murphy
+ *
+ * Photocell reference base
+ *For more information see http://learn.adafruit.com/photocells 
+ *
+ * Thermistor reference bases
+ * http://www.circuitbasics.com/arduino-thermistor-temperature-sensor-tutorial/
+ * https://create.arduino.cc/projecthub/Marcazzan_M/how-easy-is-it-to-use-a-thermistor-e39321
+ * 
+*/
+#include <CayenneMQTTESP32.h>
+#include <Ticker.h>
+
+//Ticker
+Ticker Photocell;
+Ticker Thermistor; 
+Ticker Sleep; //FIXME future note: last two channels need to be fleshed out to 
+Ticker Alert; //notify doc/nurse if patient should be sleeping in the room or if room is not optimal to sleep in
+
+//Cayenne Setup
+char username[] = ""; //FIXME: Change this as needed
+char password[] = "";
+char clientID[] = "";
+
+//WiFi SSID and Passcode
+const char* ssid     = ""; //FIXME: change these two as needed
+const char* WifiPassword = "";
+ 
+
+#define photocellPin 35     // the cell and 10K pulldown are connected to a0
+int photocellReading;     // the analog reading from the sensor divider
+#define LEDpin 32          // connect Red LED to  (PWM pin)
+int LEDbrightness;        // 
+
+#define thermPin 34 //thermistor pin
+#define Sz 60 //(5 min for practical purposes, 30sec for demo purposes)
+
+// setting PWM properties
+const int freq = 5000;
+const int ledChannel = 0;
+const int resolution = 8;
+
+
+// thermister variables
+//These values are in the datasheet
+#define RT0 10000   // Ω
+#define B 3977      // K
+//--------------------------------------
+#define VCC 3.3    //Supply voltage
+#define R 10000  //R=10KΩ
+
+float RT, VR, ln, Temp, Temp0, VRT, C, K, F;
+
+
+//Average store Array variables
+float tsenArr[Sz];
+float lsenArr[Sz];
+int pos = 0;
+
+int count = 0;
+
+float lavg = 0.0, tavg = 0.0;
+
+
+//constraint variables
+//Temperature
+//for adults 
+#define tupF 67.0 //Farenheight 
+#define tlowF 60.0
+#define tupC  19.4444    //Celcius
+#define tlowC 15.5556
+#define tupK  292.594  //Kelvin
+#define tlowK 288.706
+
+//for tottlers 65 - 70 F
+
+#define frzing 50.0
+#define ovrht 90.0
+
+
+
+//Light         //FIXME: change as  needed since photocells are not really uniform
+#define lhigh 250.0 //light sleep light 
+#define llow 100.0 //long sleep light
+#define lbest 10.0 //ideal sleep light
+
+
+void setup(void) {
+  //turn off built in LED
+  pinMode(2, OUTPUT);
+  pinMode(2, LOW);
+
+  //Attach ticker
+  Photocell.attach(1,sendToCayenne); //FIXME future note: attach another channels if deem necessary
+  Thermistor.attach(1,sendToCayenne);
+  
+  //debugging information via the Serial monitor
+  Serial.begin(115200);   
+  Cayenne.begin(username,password,clientID,ssid,WifiPassword);
+  // configure LED PWM functionalitites
+  ledcSetup(ledChannel, freq, resolution);
+  
+  // attach the channel to the GPIO to be controlled
+  ledcAttachPin(LEDpin, ledChannel);
+
+
+  Temp0 = 25 + 273.15;                 //Temperature T0 from datasheet, conversion from Celsius to kelvin
+
+  for(int i = 0; i < Sz; i++){
+    tsenArr[i] = 0.0;
+    lsenArr[i] = 0.0;
+  }
+}
+
+
+
+void sendToCayenne(){ //FIXME future note: add channels as deemed necessary
+  Cayenne.virtualWrite(8, lavg); //will send values after delay time
+  Cayenne.virtualWrite(9, tavg);
+}
+
+ 
+void loop(void) {
+  Cayenne.loop();
+  //photocell
+  photocellReading = analogRead(photocellPin);  
+ 
+  Serial.print("Analog reading = ");
+  Serial.println(photocellReading);     // the raw analog reading
+
+  lsenArr[pos] = photocellReading; //Store in array
+
+
+  //Thermistor
+  VRT = analogRead(thermPin);              //Acquisition analog value of VRT
+  
+  //Serial.print("read value");       
+  //Serial.println(VRT);
+  VRT = (5.00 / 1023.00) * VRT;      //Conversion to voltage
+  //Serial.println(VRT);
+  //Serial.println(VCC);
+  VR = VCC - VRT;
+  //Serial.println(VR);
+  RT = VRT / (VR / R);               //Resistance of RT
+  //Serial.print("RT: ");
+  //Serial.println(RT);
+
+  //Serial.print("RT0: ");
+  //Serial.println(RT0);
+  float tval = abs(RT/ RT0);//added this to original code due to receiving negative values
+  //Serial.println(tval);
+  ln = log(tval);     
+  //Serial.println(ln);
+  Temp = (1 / ((ln / B) + (1 / Temp0))); //Temperature from thermistor
+  //Serial.println(Temp);
+
+  Temp = Temp - 273.15;                 //Conversion to Celsius
+  C = Temp;
+  /*Serial.print("Temperature:");
+  Serial.print("\t");
+  Serial.print(Temp);
+  Serial.print("C\t\t");*/
+  K = Temp + 273.15;  //Conversion to Kelvin
+  /*Serial.print(K);        
+  Serial.print("K\t\t");*/
+  F = (Temp *1.8) + 32; //Conversion to Fahrenheit
+  /*Serial.print(F);    
+  Serial.println("F");
+*/
+  tsenArr[pos] = F; //Store value
+
+  
+
+  //Array position
+  if(pos < (Sz - 1)){
+    pos++;
+  }
+  else{
+    pos = 0;
+  }
+
+
+  //code for evaluating light and temp data
+ 
+  //code for evaluating light and temp data
+  if(count < Sz){
+    //Serial.println("waiting to fill values\n");
+    count++;
+  }
+  else{
+    //get average value of light and temp
+    float tsum = 0.0, lsum = 0.0;
+    for(int i = 0; i < Sz; i++){
+      tsum += tsenArr[i];
+      lsum += lsenArr[i];
+    } 
+
+    tavg = tsum/float(Sz);
+    lavg = lsum/float(Sz);
+
+
+
+    //evaluate room data  //FIXME: send to server
+    if( (lavg < lbest) && ( (tavg > tlowF) && (tavg < tupF) ) ) { //if both temp and light are ideal
+      Serial.println("Ideal sleep environment! Patient should be asleep"); 
+      
+    }
+    else if( (lavg < llow) && ( (tavg > tlowF) && (tavg < tupF) ) ) { //if temp is ideal but light is slightly ideal
+      Serial.println("Ideal nap environment! Patient might be asleep");
+
+    }
+    else{  //if only temp or light is ideal
+      
+      if(lavg <lbest){  //if light is ideal
+        Serial.println("Temperature not optimal, but have Best ideal sleeping environment lighting");
+        
+      }
+      else if(lavg <llow){ //if light is slightly ideal
+        Serial.println("Temperature not optimal, but have an ideal napping environment lighting");
+        
+      }
+      else if(lavg <lhigh){ //if light is close to ideal
+        Serial.println("Temperature not optimal, but have ok lighting");
+        
+      }
+      
+      if( (tavg > tlowF) && (tavg < tupF) ){         //if temperature is ideal
+        Serial.println("Have ideal environment temperature, but not ideal lighting for sleeping");
+      }
+      else if(tavg < frzing){
+        Serial.println("Warning: room is freezing!");
+      }
+      else if(tavg > ovrht){
+        Serial.println("Warning: room is over heating!");
+      }
+      else if(tavg < tlowF){
+        Serial.println("\tPlease bring heated blanket or warm up room");
+      }
+      else if(tavg > tupF){
+        Serial.println("\tPlease turn on the AC");
+      } 
+      else{
+          //if none of the conditions are met
+        Serial.println("Patient may have difficulty or is not sleeping: Please check");
+      } 
+    }
+    Serial.print("AveTemp: "); Serial.print(tavg);
+    Serial.print("\tAveLight: "); Serial.println(lavg);
+  }
+
+
+  
+  // This makes LED get brighter the darker it is at the sensor
+  // that means we have to -invert- the reading from 0-1023 back to 1023-0
+  //photocellReading = 1023 - photocellReading;
+  
+  //now we have to map 0-1023 to 0-255 since thats the range analogWrite uses
+  LEDbrightness = map(photocellReading, 0, 1023, 0, 255);
+  if (LEDbrightness < 0){
+    LEDbrightness = 0;
+  }
+  else if(LEDbrightness > 255){
+    LEDbrightness = 255;
+  }
+  ledcWrite(ledChannel, LEDbrightness);
+  Serial.print("LED brightness = ");
+  Serial.println(LEDbrightness);
+  Serial.println("");
+ 
+  delay(500);
+}
