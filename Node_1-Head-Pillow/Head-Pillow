@@ -1,0 +1,171 @@
+/*
+  @file PillowUnderHead.ino
+  @brief This is a prototype of a pillow placed under the head of patients. The goal is to
+    detect the body temperature of the patient.
+  @author Judit
+  @bug None known
+*/
+
+/******************************************************************************************
+                        WELCOME TO THE SMARTEST "SMART BED"!
+                The Revolution happening in numerous hospitals worldwide
+******************************************************************************************/
+#include <CayenneMQTTESP32.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <PulseSensorPlayground.h>
+PulseSensorPlayground Psensor;
+
+#define WIFI_SSID ""
+#define WIFI_PASSWORD ""
+
+int Ppin = 34; //Analog input of pulsioximeter
+int Tpin = 32; //Analog input of pulsioximeter
+int LED = 12; //LED pin
+int pulse; //Sensor output. Range: (0,1024)
+int W=10; //Window for LP filter
+int pulses[10];
+int thr = 2777; //If higher, BEAT
+int BPM; //Beats per minute
+
+static float RT, VR, ln, Temp, Temp0, VRT, C, K, F; // For temperature calculation
+char* F_char;
+#define CHECKTEMPPERIOD 1500
+#define RT0 10000 // Ω
+#define B 3977 // K
+#define VCC 3.3 //Supply voltage
+#define R 10000 //R=10KΩ
+
+void udp_send(char* data);
+
+int T_send=millis();
+int P_send=millis();
+int T_temp=millis();
+
+char CAYENNE_USERNAME[] = ""; //Username input here
+char CAYENNE_PASSWORD[] = ""; //Password input here
+char CAYENNE_CLIENTID[] = ""; //ClientID input here
+
+int n=0;
+
+/*                           SET-UP
+************************************************************************/
+
+void setup() {
+  //PINOUT SET-UP
+  pinMode(LED,OUTPUT);
+  Serial.begin(9600);
+  Cayenne.begin(CAYENNE_USERNAME,CAYENNE_PASSWORD,CAYENNE_CLIENTID,WIFI_SSID,WIFI_PASSWORD);
+
+  //PULSE SENSOR SET-UP
+  Psensor.analogInput(Ppin);
+  Psensor.blinkOnPulse(LED); //auto-magically blink Arduino's LED with heartbeat.
+  Psensor.setThreshold(thr);
+}
+
+/*                           MAIN LOOP
+************************************************************************/
+
+void loop() {
+
+  /* PULSE SENSOR READING
+  --------------------------------------*/
+
+  pulse = analogRead(Ppin);
+  Serial.println(pulse);
+
+  if(pulse > thr){
+    digitalWrite(LED,HIGH); // BEAT!
+  } else {
+    digitalWrite(LED,LOW); //BACKGROUND NOISE
+  }
+
+  Serial.println(pulse);
+
+
+  /*     PULSE READING SENT TO CAYENNE
+    * Sending every 700 ms
+  --------------------------------------*/
+
+  if(millis() - P_send > 700){
+    Cayenne.virtualWrite(10, pulse);
+    P_send=millis();
+  }
+
+
+  /*     SMOOTHING FILTER
+    * Takes into account a window of [W] values
+  --------------------------------------*/
+
+  pulses[n%30]=pulse;
+  n++;
+  int pulse_smooth=0;
+
+  for(int i=0; i<W; i++)
+  {
+    pulse_smooth+=pulses[i];
+  }
+  pulse_smooth=pulse_smooth/W;
+  Serial.println(pulse_smooth); //--> To be displayed at the Real-Time plot
+  delay(100);
+
+
+  /*     CHECK IF BEAT
+  --------------------------------------*/
+
+  if(pulse > (1.2*pulse_smooth)){
+    digitalWrite(LED,HIGH); // BEAT!
+    Serial.println("♥ A HeartBeat Happened ! ");
+    //Serial.print("BPM: ");Serial.println(BPM); // BEATS PER MINUTE
+
+  } else {
+    digitalWrite(LED,LOW); //BACKGROUND NOISE
+  }
+
+
+
+  /*     TEMPERATURE SENOR READING
+  --------------------------------------*/
+
+  if(millis()-T_temp > 3000)
+  {
+    VRT = analogRead(Tpin);
+    //Serial.print("T raw--> ");Serial.println(VRT);
+    VRT = (5.00 / 1023.00) * VRT; // Conversion to voltage
+    VR = VCC - VRT;
+    RT = VRT / (VR / R); // Resistance of RT
+    float tval = abs(RT/ RT0); // Added this to original code due to receiving negative values
+    ln = log(tval);
+    Temp = (1 / ((ln / B) + (1 / Temp0))); //Temperature from thermistor
+    Temp = Temp - 273.15; //Conversion to Celsius
+
+    C = Temp;
+    K = Temp + 273.15; //Conversion to Kelvin
+    F = (Temp *1.8) + 32; //Conversion to Fahrenheit
+
+    T_temp=millis();
+  }
+
+
+  /*     TEMPERATURE SENT TO OTHER NODE
+    * Sending every 400 ms
+  --------------------------------------*/
+
+  if(millis() - T_send > 400)
+  {
+    sprintf(F_char,"%f",F);
+    udp_send(F_char);
+    T_send=millis();
+  }
+}
+
+
+/*   TO SEND T VALUES TO OTHER NODES
+--------------------------------------*/
+void udp_send(char* data){
+  int i;
+  Udp.beginPacket(Udp.remoteIP(), Udp.remotePort());
+  Serial.println(data);
+  while (data[i] != '\0') Udp.write((uint8_t)data[i++]);
+  Udp.endPacket();
+}
