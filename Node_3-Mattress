@@ -1,0 +1,197 @@
+/*
+  @file Mattress.ino
+  @brief This is a prototype of a pillow placed under the knee of patients. The goal is to
+  detect the body temperature of the patient.
+  @author Mrunal Shailesh Sonawane
+  @bug Cayenne upload too slow;
+*/
+#include <CayenneMQTTESP32.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <Ticker.h>
+#include <math.h>
+#define VIRTUAL_CHANNEL 1
+
+WiFiUDP Udp;
+unsigned int UDPPort = 8484;
+
+const int freq = 5000;
+const int ledChannel = 0;
+const int resolution = 8;
+const int controlledMotor=22;
+const int photoResistorRight = 34;
+const int photoResistorLeft = 35;
+
+int sensor, controlledMotor_pwm,motorPos, tempReading;
+float PhotoSensorLeft,PhotoSensorRight, controlledMotor_volts;
+char packetBuffer[256];
+
+int RIGHT,LEFT,FLAT,POS;
+
+//
+Ticker Sensors,Pos,Right,Left,Flat,Temp;
+
+//WiFi SSID and Passcode
+const char* ssid = "";
+const char* WifiPassword = "";
+
+//Cayenne Setup
+char username[] = "";
+char password[] = "";
+char clientID[] = "";
+
+void sensors()
+{
+  //Serial.print("Sensor = ");Serial.println(sensor);
+  //
+  PhotoSensorRight = ((analogRead(34)) * 3.3 ) / (4095);
+  PhotoSensorLeft = ((analogRead(35)) * 3.3 ) / (4095);
+  //Thermistor=analogRead(36);
+  Serial.print("Right Sensor voltage = ");Serial.print(PhotoSensorRight);Serial.println(" V |");
+  Cayenne.virtualWrite(1, PhotoSensorRight);
+  Serial.print(" Left Sensor voltage = ");Serial.print(PhotoSensorLeft);Serial.println(" V |");
+  Cayenne.virtualWrite(2, PhotoSensorLeft);
+
+
+  controlledMotor_pwm=map(sensor,0,4095,0,255);
+}
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(115200);
+  Cayenne.begin(username,password,clientID,ssid,WifiPassword);
+
+  // Connect to Wi-Fi network with SSID and password
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, WifiPassword);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  // Print local IP address and start web server
+  Serial.println("");
+  Serial.println("WiFi connected.");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+  //myIP=WiFi.localIP();
+  Udp.begin(UDPPort);
+
+  pinMode(photoResistorRight,INPUT);
+  pinMode(photoResistorLeft,INPUT);
+  pinMode(controlledMotor,OUTPUT);
+  pinMode(LED_BUILTIN,OUTPUT);
+
+  ledcSetup(ledChannel, freq, resolution);
+  ledcAttachPin(32, ledChannel);
+
+  Sensors.attach(1,sensors );
+  Pos.attach(1,pos);
+  Temp.attach(1,readUDPPackets);
+}
+
+void loop() {
+  Cayenne.loop();
+}
+void readUDPPackets(){
+  Udp.read(packetBuffer,255);
+  tempReading=atoi(packetBuffer);
+}
+
+void rightPos(){
+  if ((PhotoSensorRight<0.03)&&(PhotoSensorLeft>0.03) && (tempReading>75) ){
+    Serial.println("CHANGE THE POSITION!!!!!");
+    digitalWrite(LED_BUILTIN,HIGH);
+    //Cayenne.virtualWrite(3, "CHANGE POSITION : RIGHT");
+  }
+}
+
+void leftPos(){
+  if ((PhotoSensorRight>0.03)&&(PhotoSensorLeft<0.03)&&(tempReading>75)){
+    Serial.println("CHANGE THE POSITION!!!!!");
+    digitalWrite(LED_BUILTIN,HIGH);
+  }
+}
+
+void flatPos(){
+  if ((PhotoSensorRight<0.03)&&(PhotoSensorLeft<0.03)&& (tempReading>75)){
+    Serial.println("CHANGE THE POSITION!!!!!");
+    digitalWrite(LED_BUILTIN,HIGH);
+    //CAYENNE_IN(4);
+  }
+}
+
+CAYENNE_IN(4)
+{
+  int value = getValue.asInt(); // 0 to 65
+  Serial.println("Slider");
+  //CAYENNE_LOG("Channel %d, pin %d, value %d", VIRTUAL_CHANNEL, ACTUATOR_PIN, value);
+  // Write the value received to the PWM pin. analogWrite accepts a value from 0 to 65.
+  motorPos=map(value,0,65,0,255);
+  ledcWrite(ledChannel,motorPos );
+}
+
+/*CAYENNE_IN_DEFAULT(){
+  int value = getValue.asInt();
+  motorPos=map(value,0,65,0,255);
+  ledcWrite(ledChannel,motorPos );
+}*/
+
+void pos(){
+  if ((PhotoSensorRight<0.03)&&(PhotoSensorLeft>0.03))
+  {
+    Serial.println ("POSTION : RIGHT");
+    //Cayenne.virtualWrite(3, "POSITION : RIGHT");
+    //CAYENNE_LOG("POSITION : RIGHT");
+    LEFT=0;FLAT=0;digitalWrite(LED_BUILTIN,LOW);
+    Left.detach();Flat.detach();
+    RIGHT++;
+    Serial.println(RIGHT%4 );
+    if ((RIGHT%4)==0){
+      Serial.println("CHANGE THE POSITION!!!!!");
+      digitalWrite(LED_BUILTIN,HIGH);
+      //Cayenne.virtualWrite(3, "CHANGE POSITION : RIGHT");
+      RIGHT=0;
+      Right.attach(1,rightPos);
+    }
+  }
+
+  if ((PhotoSensorRight>0.03)&&(PhotoSensorLeft<0.03))
+  {
+    Serial.println ("POSTION : LEFT");
+    RIGHT=0;FLAT=0;
+    digitalWrite(LED_BUILTIN,LOW);
+    Right.detach();Flat.detach();
+    LEFT++;
+    Serial.println(LEFT%4 );
+    if ((LEFT%4)==0){
+      Serial.println("CHANGE THE POSITION!!!!!");
+      digitalWrite(LED_BUILTIN,HIGH);
+      LEFT=0;
+      Left.attach(1,leftPos);
+    }
+  }
+
+  if ((PhotoSensorRight>0.03)&&(PhotoSensorLeft>0.03))
+  {
+    Serial.println ("PATIENT OUT OF PLACE");
+    RIGHT=0;LEFT=0;FLAT=0;digitalWrite(LED_BUILTIN,LOW);
+    Right.detach();Left.detach();Flat.detach();
+  }
+
+  if ((PhotoSensorRight<0.03)&&(PhotoSensorLeft<0.03))
+  {
+    Serial.println ("POSTION : FLAT");
+    RIGHT=0;LEFT=0;
+    Right.detach();Left.detach();digitalWrite(LED_BUILTIN,LOW);
+    FLAT++;
+    Serial.println(FLAT%4 );
+    if ((FLAT%4)==0){
+      Serial.println("CHANGE THE POSITION!!!!!");
+      digitalWrite(LED_BUILTIN,HIGH);
+      FLAT=0;
+      Flat.attach(1,flatPos);
+    }
+  }
+}
