@@ -1,0 +1,138 @@
+/*
+  @file PillowUnderKnee.ino
+  @brief This is a prototype of a pillow placed under the knee of patients. The goal is to
+  detect the body temperature of the patient.
+  @author Billy
+  @bug Cayenne upload too slow; Improve temperature accuracy
+  @Reference: Circuit board: http://w...content-available-to-author-only...s.com/arduinothermistor-
+  temperature-sensor-tutorial/
+*/
+
+#define THERMISPIN 36
+#define LEDPIN 32
+#define WIFI_SSID ""
+#define WIFI_PASSWORD ""
+#define CAYENNE_USERNAME ""
+#define CAYENNE_PASSWORD ""
+#define CAYENNE_CLIENTID ""
+#define CAYENNE_PRINT Serial
+
+#define RT0 10000 // Ω
+#define B 3977 // K
+#define VCC 3.3 //Supply voltage
+#define R 10000 //R=10KΩ
+
+#include <CayenneMQTTESP32.h>
+#include <Ticker.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <math.h>
+
+void show_temp_status(float averageTemp);
+
+// Human body temperature references, in farenheit
+const float deathHigh = 111.2;//death by overheat
+const float hDeath = 109.4; //normal death
+const float dhigh = 107.6; //coma
+const float hhyper = 105.8; //hyperpyrexia medical emergency
+const float hyperlow = 104.0; //hyperpyrexia
+const float hFev = 100.9; //high fever temp/hyperthermia
+const float tup = 99.5; //upper range (normal temp)
+const float tlow = 97.7; //lower range (normal temp)
+const float hypothm = 95.0; //hypothermia
+const float ldanger = 89.6; //medical emergency
+const float lcoma = 87.8; //coma
+const float nearDeath = 82.4; //may appear to be dead
+const float dlow = 75.2; //lower range of close to death
+
+static WiFiUDP Udp;
+static IPAddress remoteIp;
+static char packetBuffer[32];
+
+static float RT, VR, ln, Temp, Temp0, VRT, C, K, F; // For temperature calculation
+static unsigned long lastCheckTemp = millis();
+
+unsigned long lastMillis = 0;
+
+Ticker Sensors;
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  pinMode(LEDPIN, OUTPUT);
+  // Temperature T0 from datasheet, conversion from Celsius to kelvin
+  Temp0 = 25 + 273.15;
+  Cayenne.begin(CAYENNE_USERNAME, CAYENNE_PASSWORD, CAYENNE_CLIENTID, WIFI_SSID, WIFI_PASSWORD);
+  Sensors.attach(5, sensors);
+}
+
+void loop() {
+  Cayenne.loop();
+}
+
+CAYENNE_IN(7) {
+  CAYENNE_LOG("Channel %u, value %s", request.channel, getValue.asString());
+
+  if (getValue.asInt()) {
+    CAYENNE_LOG("Turn on LED!");
+    digitalWrite(LEDPIN, HIGH);
+  } else {
+    CAYENNE_LOG("Turn off LED!");
+    digitalWrite(LEDPIN, LOW);
+  }
+}
+
+void show_temp_status(float averageTemp) {
+  if(averageTemp >= deathHigh){
+    Serial.println("Extreme Temperature: Minimal chances of survival");
+  } else if(averageTemp >= hDeath){
+    Serial.println("Alert!: patient needs ICU, Cardio-resporatory collapse imminent");
+  } else if(averageTemp >= dhigh){
+    Serial.println("Warning: patient may go into coma and might need ICU");
+  } else if(averageTemp > hhyper){
+    Serial.println("Alert!: Hyperpyrexia levels! Patient needs Medical Emergency!!!");
+  } else if(averageTemp > hyperlow){
+    Serial.println("Warning: Hyperpyrexia imminent");
+  } else if(averageTemp >= hFev){
+    Serial.println("Alert: High Fever/Hyperthermia!");
+  } else if(averageTemp > tup){
+    Serial.println("Warning: High Fever/Hyperthermia imminent");
+  } else if(averageTemp >= tlow){
+    Serial.println("Temperature is normal :)");
+  } else if(averageTemp >= hypothm){
+    Serial.println("Temperature is slightly lower than average");
+  } else if(averageTemp > ldanger){
+    Serial.println("Alert: Hypothermia levels!");
+  } else if(averageTemp > lcoma){
+    Serial.println("Alert: patient needs Medical Emergency!");
+  } else if(averageTemp > nearDeath){
+    Serial.println("Comatose levels");
+  } else if(averageTemp >=dlow){
+    Serial.println("Alert: patient needs to be in ICU heating!!!");
+  } else{
+    Serial.println("Extreme Low Temperature: Minimal chances of survival");
+  }
+}
+
+void sensors() {
+  VRT = analogRead(THERMISPIN);
+  Serial.print(" -> Sensor Reading:"); Serial.println(VRT);
+  VRT = (5.00 / 1023.00) * VRT; // Conversion to voltage
+  VR = VCC - VRT;
+  RT = VRT / (VR / R); // Resistance of RT
+  float tval = abs(RT/ RT0); // Added this to original code due to receiving negative values
+  ln = log(tval);
+  Temp = (1 / ((ln / B) + (1 / Temp0))); //Temperature from thermistor
+  Temp = Temp - 273.15; //Conversion to Celsius
+  C = Temp;
+  K = Temp + 273.15; //Conversion to Kelvin
+  F = (Temp *1.8) + 32; //Conversion to Fahrenheit
+  Serial.print(" -> Converted Temperature:"); Serial.println(F);
+  show_temp_status(F);
+  Cayenne.virtualWrite(5, F);
+  if (F<=60.0)
+    Cayenne.virtualWrite(6, 1);
+  else
+    Cayenne.virtualWrite(6, 0);
+}
