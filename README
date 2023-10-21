@@ -1,6 +1,7 @@
 A Cyber Physical System Project for a smart hospital bed 
-where sensors take in data from various nodes and adjusts 
-accordingly while displaying the information onto Cayenne 
+using sensors of with Arduino IDE codes to take in data 
+from various nodes with ESP boards and displaying the 
+obtained information onto Cayenne in real time
 
 
 System created by
